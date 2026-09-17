@@ -29,6 +29,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from enum import Enum, auto
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -92,14 +93,50 @@ def check_required_env() -> list[str]:
     return missing
 
 
+_NY_TZ = ZoneInfo("America/New_York")
+
+# weekday(): Monday=0 ... Sunday=6
+_MON, _TUE, _WED, _THU, _FRI, _SAT, _SUN = range(7)
+
+
 def in_cme_maintenance_window(now: datetime) -> bool:
     """
-    17:00-18:00 EST daily maintenance + weekend closure, per Layer G spec.
-    NOTE: uses naive EST offset for clarity -- swap for zoneinfo("America/New_York")
-    in the real build to handle DST correctly across March/November.
+    True if `now` falls inside CME's closed/maintenance schedule:
+      - Daily maintenance break: 17:00-18:00 ET, Sunday night through Thursday
+        night (i.e. the break that follows Mon/Tue/Wed/Thu's session, plus the
+        Sunday-evening open at 18:00 that precedes Monday's session).
+      - Weekend shutdown: Friday 17:00 ET through Sunday 18:00 ET.
+
+    Uses zoneinfo("America/New_York") rather than a fixed UTC offset -- this
+    is the whole reason to prefer zoneinfo over manual EST/EDT math: the same
+    "17:00 ET" wall-clock check is correct whether it's EST (UTC-5, winter)
+    or EDT (UTC-4, summer) without any DST-detection code of our own. Python
+    handles the offset lookup internally from the IANA tz database.
+
+    `now` may be naive (assumed UTC, per the rest of this module) or
+    tz-aware; both are normalized to America/New_York before comparison.
     """
-    # placeholder logic -- replace with proper America/New_York zoneinfo handling
-    # before this goes live; flagging explicitly rather than shipping a DST bug.
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    local = now.astimezone(_NY_TZ)
+
+    weekday = local.weekday()
+    t = local.time()
+
+    # Weekend shutdown: Friday 17:00 ET -> Sunday 18:00 ET.
+    if weekday == _FRI and t.hour >= 17:
+        return True
+    if weekday == _SAT:
+        return True
+    if weekday == _SUN and t.hour < 18:
+        return True
+
+    # Daily maintenance break: 17:00-18:00 ET, Monday through Thursday.
+    # (Sunday's break doesn't apply -- Sunday 17:00-18:00 is still inside
+    # the weekend shutdown above, not a separate maintenance window.)
+    if weekday in (_MON, _TUE, _WED, _THU) and t.hour == 17:
+        return True
+
     return False
 
 
