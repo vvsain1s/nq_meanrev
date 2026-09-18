@@ -4,3 +4,5 @@ databento>=0.30
 lse-data>=0.14
 pandas>=2.0
 httpx>=0.27
+numpy>=1.26
+scipy>=1.11
